@@ -86,6 +86,15 @@ enum class ModelVariant(
         // Keep the working set small: 2 threads, small batches and context.
         serverArgs = listOf("-c", "2048", "-t", "2", "-tb", "2", "-b", "32", "-ub", "32"),
         temperature = 0.6,
+    ),
+    KIMI_LINEAR_48B_Q3(
+        "Kimi-Linear 48B-A3B Q3 (better quality, heavier)", ModelFamily.KIMI, KIMI_REPO,
+        "moonshotai_Kimi-Linear-48B-A3B-Instruct-Q3_K_M.gguf", 22_680_802_720L,
+        "d63efc0d2824059bb1792e2f023cf3644d44173480530350ddf29cbd17dc146d", 2048, "extremely slow",
+        backend = ModelBackend.CPU,
+        experimental = true,
+        serverArgs = listOf("-c", "2048", "-t", "2", "-tb", "2", "-b", "32", "-ub", "32"),
+        temperature = 0.6,
     );
 
     val url: String get() = "https://huggingface.co/$repo/resolve/main/$fileName"
