@@ -22,3 +22,7 @@ bazel-*
 # OS
 .DS_Store
 Thumbs.db
+
+# CI-generated build provenance / native lib staging
+app/src/main/assets/native_libs.txt
+native-out/
