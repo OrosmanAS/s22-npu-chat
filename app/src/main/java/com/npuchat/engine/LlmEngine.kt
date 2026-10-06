@@ -325,9 +325,7 @@ object LlmEngine {
         if (!bin.exists()) return failInit("binary", "${bin.absolutePath} is missing (APK built without llama-server?)")
         if (!bin.canExecute()) return failInit("binary", "${bin.absolutePath} is not executable")
         val version = NpuEnv.nativeManifest(context).lines().firstOrNull { it.startsWith("llama.cpp") }.orEmpty()
-        step("binary", StepStatus.OK, "${bin.absolutePath}
-${bin.length()} bytes
-$version")
+        step("binary", StepStatus.OK, "${bin.absolutePath}\n${bin.length()} bytes\n$version")
 
         val modelFile = ModelStore.file(context, v)
         if (!ModelStore.isReady(context, v)) {
@@ -335,15 +333,13 @@ $version")
         }
         val verified = ModelStore.isVerified(context, v)
         step("model", if (verified) StepStatus.OK else StepStatus.WARN,
-            "${modelFile.absolutePath}
-${modelFile.length()} bytes, SHA-256 ${if (verified) "verified" else "NOT verified"}")
+            "${modelFile.absolutePath}\n${modelFile.length()} bytes, SHA-256 ${if (verified) "verified" else "NOT verified"}")
 
         val am = context.getSystemService(android.app.ActivityManager::class.java)
         val mi = android.app.ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
         val bigger = v.sizeBytes > mi.availMem
         step("memory", if (bigger) StepStatus.WARN else StepStatus.OK, NpuEnv.memoryReport(context) +
-            if (bigger) "
-Model (%.1f GB) is bigger than free RAM: weights are paged in from storage as tokens need them.".format(v.sizeBytes / 1e9) else "")
+            if (bigger) "\nModel (%.1f GB) is bigger than free RAM: weights are paged in from storage as tokens need them.".format(v.sizeBytes / 1e9) else "")
 
         val tail = ArrayDeque<String>()
         settings.initInProgress = true
