@@ -43,6 +43,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontStyle
@@ -133,7 +134,7 @@ fun ChatScreen(vm: AppViewModel, onOpenStatus: () -> Unit) {
             }
         }
 
-        if (generating) ActivityStrip(messages.lastOrNull()?.stats, sys)
+        if (engine.state == EngineState.READY) ActivityStrip(if (generating) messages.lastOrNull()?.stats else null, generating, sys)
 
         InputBar(
             enabled = engine.state == EngineState.READY,
@@ -167,24 +168,34 @@ private fun Notice(text: String) {
 }
 
 /**
- * Live readings while generating. Android gives apps no Hexagon utilisation counter, so the NPU
- * side is shown as throughput (tok/s, ms per token); CPU and GPU are real readings.
+ * Live readings. Android gives apps no Hexagon utilisation counter, so the NPU is shown as
+ * throughput (tok/s, ms per token) plus its own temperature sensors; the rest are real readings.
  */
 @Composable
-private fun ActivityStrip(stats: GenStats?, sys: com.npuchat.engine.SysSnapshot?) {
+private fun ActivityStrip(stats: GenStats?, generating: Boolean, sys: com.npuchat.engine.SysSnapshot?) {
     val parts = mutableListOf<String>()
     val tps = stats?.liveTps
-    parts += if (stats?.ttftMs == null) "NPU: reading prompt" else if (tps != null) "NPU: %.1f tok/s (%.0f ms/token)".format(tps, 1000 / tps) else "NPU: generating"
+    parts += when {
+        !generating -> "NPU: idle"
+        stats?.ttftMs == null -> "NPU: reading prompt"
+        tps != null -> "NPU: %.1f tok/s (%.0f ms/token)".format(tps, 1000 / tps)
+        else -> "NPU: generating"
+    }
+    sys?.npuTempC?.let { parts += "NPU %.0f°C".format(it) }
+    sys?.batteryTempC?.let { parts += "battery %.0f°C".format(it) }
     sys?.appCpuPercent?.let { parts += "app CPU %.0f%%".format(it) }
     if (sys?.bigCoreMhz != null) parts += "cores %.1f/%.1f GHz".format(sys.bigCoreMhz / 1000.0, (sys.primeCoreMhz ?: 0) / 1000.0)
     sys?.gpuBusyPercent?.let { parts += "GPU $it%" }
     if (sys != null && sys.cpusAllowed != "0-7") parts += "cpus ${sys.cpusAllowed}"
+    sys?.ramUsedPercent?.let { parts += "RAM $it% used" + (sys?.appRamGb?.let { gb -> " (app %.1f GB)".format(gb) } ?: "") }
+    sys?.storageUsedPercent?.let { parts += "storage $it% used" }
+    sys?.appDiskReadMBps?.let { if (it >= 0.1) parts += "disk read %.1f MB/s".format(it) }
     Row(
         Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 12.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Dot(OkGreen)
+        Dot(if (generating) OkGreen else Color.Gray)
         Text(parts.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

@@ -88,7 +88,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     private val _sys = MutableStateFlow<SysSnapshot?>(null)
-    /** CPU/GPU readings sampled once a second while generating. */
+    /** System readings: every second while generating, every 3 s otherwise. */
     val sys: StateFlow<SysSnapshot?> = _sys
 
     private var nextId = 1L
@@ -101,8 +101,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch(Dispatchers.IO) {
             while (true) {
-                if (_generating.value) _sys.value = SystemStats.sample()
-                delay(1000)
+                _sys.value = SystemStats.sample(ctx.filesDir)
+                delay(if (_generating.value) 1000 else 3000)
             }
         }
     }
@@ -263,7 +263,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val prompt = text.trim()
         if (prompt.isEmpty() || _generating.value || !LlmEngine.isReady) return
         _generating.value = true
-        _sys.value = null
         viewModelScope.launch {
             try {
                 runTurn(prompt, retried = false)
