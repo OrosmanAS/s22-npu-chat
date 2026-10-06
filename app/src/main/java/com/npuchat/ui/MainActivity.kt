@@ -60,12 +60,13 @@ private enum class Tab(val label: String, val icon: ImageVector) {
 private fun AppRoot(vm: AppViewModel = viewModel()) {
     var tab by rememberSaveable { mutableStateOf(Tab.CHAT) }
     val engine by vm.engine.collectAsStateWithLifecycle()
+    val settings by vm.settings.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text(if (tab == Tab.CHAT) "NPU Chat" else tab.label) },
-                actions = { EngineBadge(engine.state) },
+                actions = { EngineBadge(engine.state, settings.variant.backend) },
             )
         },
         bottomBar = {

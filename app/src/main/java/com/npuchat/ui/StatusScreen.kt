@@ -39,6 +39,7 @@ import kotlinx.coroutines.withContext
 fun StatusScreen(vm: AppViewModel) {
     val engine by vm.engine.collectAsStateWithLifecycle()
     val modelReady by vm.modelReady.collectAsStateWithLifecycle()
+    val settings by vm.settings.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     val exits by produceState("loading…") { value = withContext(Dispatchers.IO) { Diagnostics.previousExits(ctx) } }
 
@@ -48,7 +49,7 @@ fun StatusScreen(vm: AppViewModel) {
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Dot(engine.state.color())
-            Text(engine.state.label(), style = MaterialTheme.typography.titleLarge)
+            Text(engine.state.label(settings.variant.backend), style = MaterialTheme.typography.titleLarge)
         }
         engine.modelName?.let { Text("Model: $it", style = MaterialTheme.typography.bodySmall) }
         engine.initMs?.let { Text("Init took %.1f s".format(it / 1000.0), style = MaterialTheme.typography.bodySmall) }
@@ -56,7 +57,7 @@ fun StatusScreen(vm: AppViewModel) {
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             when (engine.state) {
-                EngineState.IDLE -> Button(onClick = vm::initEngine, enabled = modelReady) { Text("Initialise NPU") }
+                EngineState.IDLE -> LoadModelButton(vm, enabled = modelReady)
                 EngineState.FAILED -> OutlinedButton(onClick = vm::initEngine) { Text("Retry in this process") }
                 else -> {}
             }

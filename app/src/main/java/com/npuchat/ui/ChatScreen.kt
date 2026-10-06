@@ -82,7 +82,7 @@ fun ChatScreen(vm: AppViewModel, onOpenStatus: () -> Unit) {
         if (engine.state != EngineState.READY) {
             Card(Modifier.fillMaxWidth().padding(12.dp)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(engine.state.label(), style = MaterialTheme.typography.titleMedium)
+                    Text(engine.state.label(settings.variant.backend) + " · " + settings.variant.label, style = MaterialTheme.typography.titleMedium)
                     when (engine.state) {
                         EngineState.INITIALIZING -> {
                             val running = engine.steps.firstOrNull { it.status == com.npuchat.engine.StepStatus.RUNNING }
@@ -97,7 +97,7 @@ fun ChatScreen(vm: AppViewModel, onOpenStatus: () -> Unit) {
                             }
                         }
                         else -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = vm::initEngine) { Text("Initialise NPU") }
+                            LoadModelButton(vm)
                             OutlinedButton(onClick = onOpenStatus) { Text("Details") }
                         }
                     }
@@ -134,7 +134,7 @@ fun ChatScreen(vm: AppViewModel, onOpenStatus: () -> Unit) {
             }
         }
 
-        if (engine.state == EngineState.READY) ActivityStrip(if (generating) messages.lastOrNull()?.stats else null, generating, sys)
+        if (engine.state == EngineState.READY) ActivityStrip(if (generating) messages.lastOrNull()?.stats else null, generating, sys, settings.variant.backend.label)
 
         InputBar(
             enabled = engine.state == EngineState.READY,
@@ -172,14 +172,14 @@ private fun Notice(text: String) {
  * throughput (tok/s, ms per token) plus its own temperature sensors; the rest are real readings.
  */
 @Composable
-private fun ActivityStrip(stats: GenStats?, generating: Boolean, sys: com.npuchat.engine.SysSnapshot?) {
+private fun ActivityStrip(stats: GenStats?, generating: Boolean, sys: com.npuchat.engine.SysSnapshot?, backend: String) {
     val parts = mutableListOf<String>()
     val tps = stats?.liveTps
     parts += when {
-        !generating -> "NPU: idle"
-        stats?.ttftMs == null -> "NPU: reading prompt"
-        tps != null -> "NPU: %.1f tok/s (%.0f ms/token)".format(tps, 1000 / tps)
-        else -> "NPU: generating"
+        !generating -> "$backend: idle"
+        stats?.ttftMs == null -> "$backend: reading prompt"
+        tps != null -> "$backend: %.1f tok/s (%.0f ms/token)".format(tps, 1000 / tps)
+        else -> "$backend: generating"
     }
     sys?.npuTempC?.let { parts += "NPU %.0f°C".format(it) }
     sys?.batteryTempC?.let { parts += "battery %.0f°C".format(it) }

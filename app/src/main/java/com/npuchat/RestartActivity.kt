@@ -29,6 +29,8 @@ class RestartActivity : Activity() {
 
         fun restartApp(context: Context) {
             AppLog.i("App", "restarting app process")
+            // Only our own pid gets killed below; stop the CPU model server so it can't linger.
+            com.npuchat.engine.LlamaServer.stop()
             val intent = Intent(context, RestartActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 .putExtra(EXTRA_PID, Process.myPid())

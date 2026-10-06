@@ -28,6 +28,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.npuchat.engine.EngineState
+import com.npuchat.model.ModelBackend
 import com.npuchat.model.ModelStore
 import com.npuchat.model.ModelVariant
 
@@ -42,6 +43,7 @@ fun ModelList(vm: AppViewModel) {
     val revision by vm.modelRevision.collectAsStateWithLifecycle()
     var pendingDownload by remember { mutableStateOf<ModelVariant?>(null) }
     var confirmDelete by remember { mutableStateOf<ModelVariant?>(null) }
+    var confirmUse by remember { mutableStateOf<ModelVariant?>(null) }
 
     val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         pendingDownload?.let(vm::downloadModel)
@@ -53,7 +55,15 @@ fun ModelList(vm: AppViewModel) {
     val engineLoaded = engine.state != EngineState.IDLE
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        ModelVariant.entries.forEach { v ->
+        ModelVariant.entries.forEachIndexed { i, v ->
+            if (i == 0 || ModelVariant.entries[i - 1].backend != v.backend) {
+                Text(
+                    if (v.backend == ModelBackend.NPU) "NPU models (Hexagon v69, LiteRT-LM)" else "CPU models (llama.cpp, MoE, weights read from storage)",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
             // Re-read the files whenever the revision changes.
             val ready = remember(revision) { ModelStore.isReady(ctx, v) }
             val active = settings.variant == v
@@ -66,6 +76,10 @@ fun ModelList(vm: AppViewModel) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(v.label + if (active) "  ·  active" else "", style = MaterialTheme.typography.titleSmall)
                     Text(v.summary, style = MaterialTheme.typography.bodySmall)
+                    if (v.experimental) Text(
+                        "Experimental: bigger than RAM, very slow, may freeze the phone until it restarts.",
+                        style = MaterialTheme.typography.bodySmall, color = FailRed,
+                    )
                     when {
                         thisDownload != null -> {
                             Text("${thisDownload.phase.replaceFirstChar { it.uppercase() }}: ${formatGb(thisDownload.done)} / ${formatGb(thisDownload.total)}",
@@ -74,7 +88,9 @@ fun ModelList(vm: AppViewModel) {
                             OutlinedButton(onClick = vm::cancelDownload) { Text("Cancel") }
                         }
                         ready -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (!active) Button(onClick = { vm.useModel(v) }) { Text(if (engineLoaded) "Use (restarts app)" else "Use") }
+                            if (!active) Button(onClick = { if (v.experimental) confirmUse = v else vm.useModel(v) }) {
+                                Text(if (engineLoaded) "Use (restarts app)" else "Use")
+                            }
                             if (!(active && engineLoaded)) OutlinedButton(onClick = { confirmDelete = v }) { Text("Delete") }
                             if (active && engineLoaded) Text("Loaded", style = MaterialTheme.typography.bodySmall, color = OkGreen)
                         }
@@ -109,12 +125,16 @@ fun ModelList(vm: AppViewModel) {
             }
         }
         Text(
-            "Only models compiled for the Snapdragon 8 Gen 1 NPU (SM8450, Hexagon v69) run here; " +
-                "anything else fails with QNN error 1002. Downloads run in the background and resume if interrupted. " +
-                "One model is loaded at a time: switching restarts the app.",
+            "NPU models must be compiled for the Snapdragon 8 Gen 1 (SM8450, Hexagon v69); anything else fails " +
+                "with QNN error 1002. CPU models run in a bundled llama.cpp server. Downloads run in the background " +
+                "and resume if interrupted. One model is loaded at a time: switching restarts the app.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+
+    confirmUse?.let { v ->
+        ExperimentalDialog(v.label, onDismiss = { confirmUse = null }) { confirmUse = null; vm.useModel(v) }
     }
 
     confirmDelete?.let { v ->

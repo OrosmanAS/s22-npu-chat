@@ -20,6 +20,7 @@ import com.npuchat.engine.SystemStats
 import com.npuchat.log.AppLog
 import com.npuchat.log.Diagnostics
 import com.npuchat.model.DownloadWorker
+import com.npuchat.model.ModelBackend
 import com.npuchat.model.ModelStore
 import com.npuchat.model.ModelVariant
 import kotlinx.coroutines.Dispatchers
@@ -95,7 +96,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         val s = settings.value
-        if (isModelReady() && s.autoInit && !lastInitCrashed) {
+        // Experimental models can freeze the phone, so they are only ever loaded by hand.
+        if (isModelReady() && s.autoInit && !lastInitCrashed && !s.variant.experimental) {
             AppLog.i(TAG, "auto-init on launch")
             initEngine()
         }
@@ -130,7 +132,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun maybeAutoInit() {
-        if (isModelReady() && settings.value.autoInit && !lastInitCrashed && engine.value.state == EngineState.IDLE) initEngine()
+        val s = settings.value
+        if (isModelReady() && s.autoInit && !lastInitCrashed && !s.variant.experimental && engine.value.state == EngineState.IDLE) initEngine()
     }
 
     // ---- models ----
@@ -284,7 +287,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val reply = ChatMessage(nextId++, fromUser = false, text = "", streaming = true)
         _messages.update { it + reply }
 
-        val flow = if (mode == ChatMode.CONVERSATION) LlmEngine.send(prompt, cfg) else LlmEngine.sendRaw(history, prompt, cfg)
+        val flow = when {
+            cfg.variant.backend == ModelBackend.CPU -> LlmEngine.sendCpu(history, prompt, cfg)
+            mode == ChatMode.CONVERSATION -> LlmEngine.send(prompt, cfg)
+            else -> LlmEngine.sendRaw(history, prompt, cfg)
+        }
         var outcome: String? = null // reason to start a fresh context after this turn
         try {
             flow.collect { ev ->

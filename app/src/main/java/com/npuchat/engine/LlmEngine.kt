@@ -22,9 +22,12 @@ import com.npuchat.ChatMode
 import com.npuchat.Settings
 import com.npuchat.SettingsState
 import com.npuchat.log.AppLog
+import com.npuchat.model.ModelBackend
 import com.npuchat.model.ModelFamily
 import com.npuchat.model.ModelStore
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -61,6 +64,7 @@ data class EngineUi(
     val initMs: Long? = null,
     val modelName: String? = null,
     val contextTokens: Int = 0,
+    val backend: ModelBackend = ModelBackend.NPU,
 )
 
 private fun defaultSteps() = listOf(
@@ -73,6 +77,15 @@ private fun defaultSteps() = listOf(
     InitStep("memory", "Free memory"),
     InitStep("engine", "LiteRT-LM engine on NPU"),
     InitStep("conversation", "Conversation"),
+)
+
+private fun cpuSteps() = listOf(
+    InitStep("device", "Device / SoC"),
+    InitStep("binary", "llama.cpp server binary"),
+    InitStep("model", "Model file"),
+    InitStep("memory", "Free memory"),
+    InitStep("server", "Start llama-server"),
+    InitStep("load", "Load model (mmap from storage)"),
 )
 
 data class GenStats(
@@ -122,9 +135,15 @@ object LlmEngine {
 
     val isReady get() = _ui.value.state == EngineState.READY
 
-    /** The raw-session path hand-builds Qwen prompts, so other model families always use the Conversation API. */
-    fun effectiveMode(cfg: SettingsState): ChatMode =
-        if (cfg.variant.family == ModelFamily.QWEN) cfg.chatMode else ChatMode.CONVERSATION
+    /**
+     * The raw-session path hand-builds Qwen prompts, so other NPU families always use the
+     * Conversation API. CPU models are stateless like raw mode: the history is sent every turn.
+     */
+    fun effectiveMode(cfg: SettingsState): ChatMode = when {
+        cfg.variant.backend == ModelBackend.CPU -> ChatMode.RAW_SESSION
+        cfg.variant.family == ModelFamily.QWEN -> cfg.chatMode
+        else -> ChatMode.CONVERSATION
+    }
 
     private fun step(id: String, status: StepStatus, detail: String = "", ms: Long? = null) {
         _ui.update { s -> s.copy(steps = s.steps.map { if (it.id == id) it.copy(status = status, detail = detail, ms = ms) else it }) }
@@ -153,6 +172,7 @@ object LlmEngine {
         if (_ui.value.state == EngineState.READY || _ui.value.state == EngineState.INITIALIZING) return@withContext isReady
         val cfg = settings.current
         val variant = cfg.variant
+        if (variant.backend == ModelBackend.CPU) return@withContext initCpu(context, settings)
         val tStart = System.nanoTime()
         _ui.value = EngineUi(state = EngineState.INITIALIZING, modelName = variant.fileName)
         AppLog.i(TAG, "==== NPU init start: model=${variant.fileName} mode=${cfg.chatMode} preload=${cfg.preloadLibs} ====")
@@ -278,6 +298,93 @@ object LlmEngine {
         true
     }
 
+    private fun failInit(id: String, msg: String, ms: Long? = null): Boolean {
+        step(id, StepStatus.FAIL, msg, ms)
+        _ui.update { s ->
+            s.copy(
+                state = EngineState.FAILED,
+                error = msg.lineSequence().first(),
+                steps = s.steps.map { if (it.status == StepStatus.PENDING) it.copy(status = StepStatus.SKIPPED) else it },
+            )
+        }
+        AppLog.e(TAG, "==== init FAILED at $id ====")
+        return false
+    }
+
+    /** CPU models: start the bundled llama-server and wait until it has the model loaded. */
+    private fun initCpu(context: Context, settings: Settings): Boolean {
+        val cfg = settings.current
+        val v = cfg.variant
+        val tStart = System.nanoTime()
+        _ui.value = EngineUi(state = EngineState.INITIALIZING, steps = cpuSteps(), modelName = v.fileName, backend = ModelBackend.CPU)
+        AppLog.i(TAG, "==== CPU init start: model=${v.fileName} experimental=${v.experimental} ====")
+
+        step("device", StepStatus.OK, NpuEnv.deviceReport(context))
+
+        val bin = LlamaServer.binary(context)
+        if (!bin.exists()) return failInit("binary", "${bin.absolutePath} is missing (APK built without llama-server?)")
+        if (!bin.canExecute()) return failInit("binary", "${bin.absolutePath} is not executable")
+        val version = NpuEnv.nativeManifest(context).lines().firstOrNull { it.startsWith("llama.cpp") }.orEmpty()
+        step("binary", StepStatus.OK, "${bin.absolutePath}
+${bin.length()} bytes
+$version")
+
+        val modelFile = ModelStore.file(context, v)
+        if (!ModelStore.isReady(context, v)) {
+            return failInit("model", "${modelFile.absolutePath} missing or wrong size (${modelFile.length()} != ${v.sizeBytes})")
+        }
+        val verified = ModelStore.isVerified(context, v)
+        step("model", if (verified) StepStatus.OK else StepStatus.WARN,
+            "${modelFile.absolutePath}
+${modelFile.length()} bytes, SHA-256 ${if (verified) "verified" else "NOT verified"}")
+
+        val am = context.getSystemService(android.app.ActivityManager::class.java)
+        val mi = android.app.ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+        val bigger = v.sizeBytes > mi.availMem
+        step("memory", if (bigger) StepStatus.WARN else StepStatus.OK, NpuEnv.memoryReport(context) +
+            if (bigger) "
+Model (%.1f GB) is bigger than free RAM: weights are paged in from storage as tokens need them.".format(v.sizeBytes / 1e9) else "")
+
+        val tail = ArrayDeque<String>()
+        settings.initInProgress = true
+        val (startErr, startMs) = timed {
+            runCatching {
+                LlamaServer.start(context, v) { line -> synchronized(tail) { if (tail.size >= 20) tail.removeFirst(); tail.addLast(line) } }
+            }.exceptionOrNull()
+        }
+        if (startErr != null) {
+            settings.initInProgress = false
+            AppLog.e(TAG, "llama-server start failed", startErr)
+            return failInit("server", "${startErr.javaClass.simpleName}: ${startErr.message}", startMs)
+        }
+        step("server", StepStatus.OK, LlamaServer.args(context, v).drop(1).joinToString(" "), startMs)
+
+        step("load", StepStatus.RUNNING, "Loading ${v.label}…")
+        val t0 = System.nanoTime()
+        val deadline = t0 + 20L * 60 * 1_000_000_000
+        while (true) {
+            val code = LlamaServer.health()
+            if (code == 200) break
+            if (!LlamaServer.isRunning || System.nanoTime() > deadline) {
+                settings.initInProgress = false
+                val last = synchronized(tail) { tail.joinToString("\n") }
+                return failInit("load",
+                    (if (LlamaServer.isRunning) "Timed out waiting for the model to load" else "llama-server exited (code ${LlamaServer.exitCode()})") +
+                        "\n\nLast output:\n$last",
+                    (System.nanoTime() - t0) / 1_000_000)
+            }
+            Thread.sleep(500)
+        }
+        settings.initInProgress = false
+        val loadMs = (System.nanoTime() - t0) / 1_000_000
+        step("load", StepStatus.OK, "Ready. ${NpuEnv.memoryReport(context)}", loadMs)
+
+        val total = (System.nanoTime() - tStart) / 1_000_000
+        _ui.update { it.copy(state = EngineState.READY, initMs = total, contextTokens = v.contextTokens) }
+        AppLog.i(TAG, "==== CPU init OK in $total ms ====")
+        return true
+    }
+
     private fun conversationConfig(cfg: SettingsState) = ConversationConfig(
         systemInstruction = cfg.systemPrompt.takeIf { it.isNotBlank() }?.let { Contents.of(it) },
         // NPU executor is greedy; a sampler config is ignored at best.
@@ -294,7 +401,7 @@ object LlmEngine {
 
     /** Starts a fresh chat (new KV cache). The engine and NPU contexts stay loaded. */
     suspend fun reset(cfg: SettingsState) = withContext(dispatcher) {
-        if (engine == null) return@withContext
+        if (engine == null) return@withContext // CPU models keep no state between requests
         if (effectiveMode(cfg) == ChatMode.CONVERSATION) {
             openConversation(cfg)
         } else {
@@ -306,6 +413,7 @@ object LlmEngine {
 
     fun cancel() {
         AppLog.i(CHAT, "cancel requested")
+        if (LlamaServer.isRunning) LlamaServer.cancel()
         runCatching { conversation?.cancelProcess() }.onFailure { AppLog.w(CHAT, "cancelProcess failed", it) }
         activeSession?.let { s -> runCatching { s.cancelProcess() }.onFailure { AppLog.w(CHAT, "session cancel failed", it) } }
     }
@@ -376,6 +484,81 @@ object LlmEngine {
         AppLog.i(CHAT, "done: chunks=$chunks elapsed=${final.elapsedMs}ms ttft=${final.ttftMs}ms live=${final.liveTps?.let { "%.1f".format(it) }} tok/s ctx=${final.contextUsed}")
         emit(GenEvent.Done(final))
     }.flowOn(dispatcher)
+
+    // ---- CPU path (llama-server over localhost) ----
+
+    private sealed class CpuEvent {
+        data class D(val delta: LlamaServer.Delta) : CpuEvent()
+        data class F(val final: LlamaServer.Final) : CpuEvent()
+    }
+
+    fun sendCpu(history: List<Pair<String, String>>, text: String, cfg: SettingsState): Flow<GenEvent> = flow {
+        val messages = buildList {
+            if (cfg.systemPrompt.isNotBlank()) add("system" to cfg.systemPrompt.trim())
+            for ((u, a) in history) { add("user" to u); add("assistant" to a) }
+            add("user" to text)
+        }
+        AppLog.i(CHAT, "send (cpu) model=${cfg.variant.name} thinking=${cfg.thinking} turns=${history.size} chars=${text.length}")
+        val t0 = System.nanoTime()
+        var ttft: Long? = null
+        var chunks = 0
+        val answer = StringBuilder()
+        val thought = StringBuilder()
+        var final: LlamaServer.Final? = null
+        var stopReason: String? = null
+        fun stats() = GenStats(chunks, (System.nanoTime() - t0) / 1_000_000, ttft)
+
+        val events = callbackFlow<CpuEvent> {
+            val job = launch(Dispatchers.IO) {
+                try {
+                    val f = LlamaServer.chat(messages, cfg.variant, cfg.thinking, cfg.maxOutputTokens, cfg.repetitionPenalty) {
+                        trySend(CpuEvent.D(it))
+                    }
+                    send(CpuEvent.F(f))
+                    close()
+                } catch (t: Throwable) {
+                    close(t)
+                }
+            }
+            awaitClose { if (job.isActive) LlamaServer.cancel() }
+        }.buffer(Channel.UNLIMITED)
+
+        try {
+            events.collect { ev ->
+                when (ev) {
+                    is CpuEvent.D -> {
+                        chunks++
+                        if (ttft == null) ttft = (System.nanoTime() - t0) / 1_000_000
+                        answer.append(ev.delta.content)
+                        thought.append(ev.delta.reasoning)
+                        if (chunks <= 3) AppLog.d(CHAT, "cpu chunk#$chunks ${ev.delta.content.take(40).quoted()} reasoning=${ev.delta.reasoning.take(40).quoted()}")
+                        else AppLog.v(CHAT, "cpu chunk#$chunks ${ev.delta.content.quoted()}")
+                        emit(GenEvent.Delta(answer.toString(), thought.toString(), stats()))
+                        if (stopReason == null && chunks % 8 == 0 &&
+                            (LoopDetector.isLooping(thought) || LoopDetector.isLooping(answer))
+                        ) {
+                            stopReason = "loop"
+                            AppLog.w(CHAT, "repetition loop detected at chunk $chunks; cancelling")
+                            LlamaServer.cancel()
+                        }
+                    }
+                    is CpuEvent.F -> final = ev.final
+                }
+            }
+        } catch (e: CancellationException) {
+            if (stopReason == null || !currentCoroutineContext().isActive) throw e
+        }
+
+        val f = final
+        if (stopReason == null && f?.finishReason == "length") stopReason = "limit"
+        val done = stats().copy(
+            decodeTps = f?.predictedTps, prefillTps = f?.promptTps,
+            prefillTokens = f?.promptTokens, decodeTokens = f?.predictedTokens,
+            contextUsed = f?.contextUsed, stopReason = stopReason,
+        )
+        AppLog.i(CHAT, "cpu done: chunks=$chunks elapsed=${done.elapsedMs}ms ttft=${done.ttftMs}ms decode=${f?.predictedTps} tok/s prefill=${f?.promptTps} tok/s (${f?.promptTokens} tok) ctx=${f?.contextUsed} finish=${f?.finishReason}")
+        emit(GenEvent.Done(done))
+    }.flowOn(Dispatchers.IO)
 
     // ---- Raw session path (hand-rendered Qwen prompt, as in the model card's CLI) ----
 

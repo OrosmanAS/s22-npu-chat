@@ -24,6 +24,7 @@ class NpuChatApp : Application() {
 
         // Must happen before any QNN library is loaded in this process.
         NpuEnv.configure(this)
+        com.npuchat.engine.LlamaServer.killStale()
 
         lastInitCrashed = settings.initInProgress
         if (lastInitCrashed) {

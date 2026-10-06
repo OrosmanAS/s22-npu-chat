@@ -85,7 +85,7 @@ fun SettingsScreen(vm: AppViewModel) {
         Hint("If a reply still loops, the app stops it and starts a fresh context.")
 
         Section("Engine")
-        Toggle("Initialise NPU on launch", s.autoInit) { on -> vm.updateSettings { it.copy(autoInit = on) } }
+        Toggle("Load the model on launch (never for experimental models)", s.autoInit) { on -> vm.updateSettings { it.copy(autoInit = on) } }
         Toggle("Preload QNN + dispatch libs (dlopen evidence)", s.preloadLibs) { on -> vm.updateSettings { it.copy(preloadLibs = on) } }
         Toggle("Benchmark info (exact tok/s)", s.benchmark) { on -> vm.updateSettings { it.copy(benchmark = on) } }
         Hint("Engine options apply at the next initialisation.")

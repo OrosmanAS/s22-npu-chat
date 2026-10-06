@@ -7,16 +7,25 @@ import java.io.InputStream
 import java.security.MessageDigest
 
 /** Chat format family. The raw-session path hand-builds prompts, so it only supports Qwen. */
-enum class ModelFamily { QWEN, GRANITE, GEMMA }
+enum class ModelFamily { QWEN, GRANITE, GEMMA, LFM, KIMI }
+
+/** Where a model runs: the Hexagon NPU via LiteRT-LM, or the CPU via a bundled llama-server. */
+enum class ModelBackend(val label: String) { NPU("NPU"), CPU("CPU") }
 
 private const val QWEN_REPO = "assassinshadow/Qwen3.5-2B-SM8450-LiteRT-LM-NPU"
 private const val GRANITE_REPO = "assassinshadow/Granite-4.2-3B-SM8450-LiteRT-LM-NPU"
 private const val GEMMA_REPO = "assassinshadow/Gemma-4-E2B-it-text-SM8450-LiteRT-LM-NPU"
+private const val LFM_REPO = "LiquidAI/LFM2.5-8B-A1B-GGUF"
+private const val KIMI_REPO = "bartowski/moonshotai_Kimi-Linear-48B-A3B-Instruct-GGUF"
 
 /**
- * Every published LiteRT-LM bundle compiled for SM8450 / Hexagon v69 (all built against QAIRT
- * 2.50.0.260828 + LiteRT-LM v0.17.1, i.e. the runtime this app bundles). Bundles for other
- * Hexagon versions fail with "Failed to create QNN context: 1002".
+ * NPU models: every published LiteRT-LM bundle compiled for SM8450 / Hexagon v69 (all built
+ * against QAIRT 2.50.0.260828 + LiteRT-LM v0.17.1, i.e. the runtime this app bundles). Bundles for
+ * other Hexagon versions fail with "Failed to create QNN context: 1002".
+ *
+ * CPU models: MoE GGUFs run by llama-server with the weights mmap'd from storage, so a model can
+ * be bigger than free RAM (slower the more it has to page in).
+ *
  * Enum names are persisted in settings; don't rename them.
  */
 enum class ModelVariant(
@@ -28,6 +37,12 @@ enum class ModelVariant(
     val sha256: String,
     val contextTokens: Int,
     val speed: String,
+    val backend: ModelBackend = ModelBackend.NPU,
+    /** Can freeze the phone (model far bigger than RAM). Never auto-loaded; asks before loading. */
+    val experimental: Boolean = false,
+    /** llama-server arguments for CPU models (besides model, host and port). */
+    val serverArgs: List<String> = emptyList(),
+    val temperature: Double = 0.7,
 ) {
     CTX_4K(
         "Qwen3.5-2B", ModelFamily.QWEN, QWEN_REPO,
@@ -53,10 +68,28 @@ enum class ModelVariant(
         "Granite 4.2 3B (fast)", ModelFamily.GRANITE, GRANITE_REPO,
         "granite42-3b-ctx2048_sm8450.litertlm", 2_005_680_968L,
         "6a0f7a3b0b40198df4d7807af3f74eee991fb3c6df0f54b80ef659e1912cfe0b", 2048, "~10 tok/s",
+    ),
+    LFM25_8B_A1B(
+        "LFM2.5 8B-A1B (MoE, 1.5B active)", ModelFamily.LFM, LFM_REPO,
+        "LFM2.5-8B-A1B-Q4_0.gguf", 4_844_678_368L,
+        "48ed1465d761311b2fd57b7fb46cf969a20b3a8281945b04e10f52bd1609e715", 4096, "CPU, speed unknown",
+        backend = ModelBackend.CPU,
+        serverArgs = listOf("-c", "4096", "-t", "4", "-tb", "4"),
+        temperature = 0.3,
+    ),
+    KIMI_LINEAR_48B(
+        "Kimi-Linear 48B-A3B (MoE, 3B active)", ModelFamily.KIMI, KIMI_REPO,
+        "moonshotai_Kimi-Linear-48B-A3B-Instruct-IQ2_XXS.gguf", 12_129_177_504L,
+        "38150997ff3affffc1a94caa996336ca0ac2312d2d418a8261afdf30c8b13b78", 2048, "very slow",
+        backend = ModelBackend.CPU,
+        experimental = true,
+        // Keep the working set small: 2 threads, small batches and context.
+        serverArgs = listOf("-c", "2048", "-t", "2", "-tb", "2", "-b", "32", "-ub", "32"),
+        temperature = 0.6,
     );
 
     val url: String get() = "https://huggingface.co/$repo/resolve/main/$fileName"
-    val summary: String get() = "ctx $contextTokens · $speed · %.2f GB".format(sizeBytes / 1e9)
+    val summary: String get() = "${backend.label} · ctx $contextTokens · $speed · %.2f GB".format(sizeBytes / 1e9)
 
     companion object {
         fun bySha(sha: String) = entries.firstOrNull { it.sha256.equals(sha, ignoreCase = true) }

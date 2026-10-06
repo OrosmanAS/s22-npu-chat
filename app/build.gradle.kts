@@ -13,6 +13,7 @@ val requiredNativeLibs = listOf(
     "libQnnHtpV69Stub.so",
     "libQnnHtpV69Skel.so",
     "libLiteRtDispatch_Qualcomm.so",
+    "libllama_server.so", // llama.cpp server executable for CPU models (exec'd, not dlopen'd)
 )
 
 android {
@@ -64,7 +65,7 @@ android {
             useLegacyPackaging = true
             // Ship the Qualcomm/dispatch libs byte-for-byte. The skel is a Hexagon binary that the
             // arm64 strip step must not touch.
-            keepDebugSymbols += listOf("**/libQnn*.so", "**/libLiteRtDispatch_Qualcomm.so")
+            keepDebugSymbols += listOf("**/libQnn*.so", "**/libLiteRtDispatch_Qualcomm.so", "**/libllama_server.so")
         }
     }
 }
