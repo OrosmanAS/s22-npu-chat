@@ -13,14 +13,19 @@ enum class ChatMode(val label: String) {
 }
 
 data class SettingsState(
-    val thinking: Boolean = true,
+    val thinking: Boolean = false,
     val chatMode: ChatMode = ChatMode.CONVERSATION,
     val logLevel: Level = Level.DEBUG,
     val nativeVerbose: Boolean = false,
     val autoInit: Boolean = true,
     val preloadLibs: Boolean = true,
     val benchmark: Boolean = true,
-    val maxOutputTokens: Int = 0, // 0 = model default
+    val maxOutputTokens: Int = 2048, // 0 = model default (can fill the whole context)
+    // Anti-loop controls. The NPU decodes greedily, so small models can repeat forever; LiteRT-LM
+    // applies these as logit constraints before the greedy pick (they work on the NPU path).
+    val thinkingBudget: Int = 1024, // max thinking tokens, then </think> is forced; 0 = unlimited
+    val repetitionPenalty: Float = 1.1f, // 1.0 = off
+    val noRepeatNgram: Int = 12, // block repeating any 12-token sequence; 0 = off
     val systemPrompt: String = "",
     val variant: ModelVariant = ModelVariant.CTX_4K,
 )
@@ -28,6 +33,8 @@ data class SettingsState(
 /** SharedPreferences-backed settings exposed as a StateFlow. */
 class Settings(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    init { migrate() }
+
     private val _state = MutableStateFlow(load())
     val state: StateFlow<SettingsState> = _state
     val current: SettingsState get() = _state.value
@@ -43,10 +50,23 @@ class Settings(context: Context) {
             .putBoolean("preloadLibs", next.preloadLibs)
             .putBoolean("benchmark", next.benchmark)
             .putInt("maxOutputTokens", next.maxOutputTokens)
+            .putInt("thinkingBudget", next.thinkingBudget)
+            .putFloat("repetitionPenalty", next.repetitionPenalty)
+            .putInt("noRepeatNgram", next.noRepeatNgram)
             .putString("systemPrompt", next.systemPrompt)
             .putString("variant", next.variant.name)
             .apply()
         _state.value = next
+    }
+
+    private fun migrate() {
+        val version = prefs.getInt("version", 1)
+        if (version < 2) {
+            // v1 defaults let a thinking loop fill the whole context (seen on the S22+).
+            val e = prefs.edit().putInt("version", 2)
+            if (prefs.getInt("maxOutputTokens", 0) == 0) e.putInt("maxOutputTokens", 2048)
+            e.apply()
+        }
     }
 
     private fun load(): SettingsState {
@@ -60,6 +80,9 @@ class Settings(context: Context) {
             preloadLibs = prefs.getBoolean("preloadLibs", d.preloadLibs),
             benchmark = prefs.getBoolean("benchmark", d.benchmark),
             maxOutputTokens = prefs.getInt("maxOutputTokens", d.maxOutputTokens),
+            thinkingBudget = prefs.getInt("thinkingBudget", d.thinkingBudget),
+            repetitionPenalty = prefs.getFloat("repetitionPenalty", d.repetitionPenalty),
+            noRepeatNgram = prefs.getInt("noRepeatNgram", d.noRepeatNgram),
             systemPrompt = prefs.getString("systemPrompt", d.systemPrompt) ?: "",
             variant = enumOr(prefs.getString("variant", null), d.variant),
         )

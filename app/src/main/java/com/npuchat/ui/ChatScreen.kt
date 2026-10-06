@@ -64,6 +64,7 @@ fun ChatScreen(vm: AppViewModel, onOpenStatus: () -> Unit) {
     val messages by vm.messages.collectAsStateWithLifecycle()
     val generating by vm.generating.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
+    val sys by vm.sys.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
 
     // Keep the screen on while the NPU is generating.
@@ -124,9 +125,15 @@ fun ChatScreen(vm: AppViewModel, onOpenStatus: () -> Unit) {
                 }
             }
             items(messages, key = { it.id }) { m ->
-                if (m.fromUser) UserBubble(m.text) else AssistantBubble(m, engine.contextTokens)
+                when {
+                    m.notice -> Notice(m.text)
+                    m.fromUser -> UserBubble(m.text)
+                    else -> AssistantBubble(m, engine.contextTokens)
+                }
             }
         }
+
+        if (generating) ActivityStrip(messages.lastOrNull()?.stats, sys)
 
         InputBar(
             enabled = engine.state == EngineState.READY,
@@ -147,6 +154,39 @@ private fun Banner(text: String) {
         Modifier.fillMaxWidth().background(FailRed.copy(alpha = 0.15f)).padding(12.dp),
         style = MaterialTheme.typography.bodySmall,
     )
+}
+
+@Composable
+private fun Notice(text: String) {
+    Text(
+        text,
+        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp)).padding(8.dp),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/**
+ * Live readings while generating. Android gives apps no Hexagon utilisation counter, so the NPU
+ * side is shown as throughput (tok/s, ms per token); CPU and GPU are real readings.
+ */
+@Composable
+private fun ActivityStrip(stats: GenStats?, sys: com.npuchat.engine.SysSnapshot?) {
+    val parts = mutableListOf<String>()
+    val tps = stats?.liveTps
+    parts += if (stats?.ttftMs == null) "NPU: reading prompt" else if (tps != null) "NPU: %.1f tok/s (%.0f ms/token)".format(tps, 1000 / tps) else "NPU: generating"
+    sys?.appCpuPercent?.let { parts += "app CPU %.0f%%".format(it) }
+    if (sys?.bigCoreMhz != null) parts += "cores %.1f/%.1f GHz".format(sys.bigCoreMhz / 1000.0, (sys.primeCoreMhz ?: 0) / 1000.0)
+    sys?.gpuBusyPercent?.let { parts += "GPU $it%" }
+    if (sys != null && sys.cpusAllowed != "0-7") parts += "cpus ${sys.cpusAllowed}"
+    Row(
+        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 12.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Dot(OkGreen)
+        Text(parts.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
 }
 
 @Composable
@@ -220,6 +260,10 @@ private fun StatsLine(s: GenStats, streaming: Boolean, contextTokens: Int) {
     }
     s.ttftMs?.let { parts += "first token %.1f s".format(it / 1000.0) }
     if (s.contextUsed != null && contextTokens > 0) parts += "ctx ${s.contextUsed}/$contextTokens"
+    when (s.stopReason) {
+        "loop" -> parts += "stopped: repetition loop"
+        "limit" -> parts += "stopped: max output length"
+    }
     Text(parts.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 

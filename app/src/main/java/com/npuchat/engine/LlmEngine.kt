@@ -13,6 +13,8 @@ import com.google.ai.edge.litertlm.ExperimentalFlags
 import com.google.ai.edge.litertlm.InputData
 import com.google.ai.edge.litertlm.LogSeverity
 import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.NoRepeatNgramConfig
+import com.google.ai.edge.litertlm.RepetitionPenaltyConfig
 import com.google.ai.edge.litertlm.ResponseCallback
 import com.google.ai.edge.litertlm.Session
 import com.google.ai.edge.litertlm.ThinkingConfig
@@ -20,6 +22,7 @@ import com.npuchat.ChatMode
 import com.npuchat.Settings
 import com.npuchat.SettingsState
 import com.npuchat.log.AppLog
+import com.npuchat.model.ModelFamily
 import com.npuchat.model.ModelStore
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
@@ -32,6 +35,9 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.Executors
@@ -78,6 +84,8 @@ data class GenStats(
     val prefillTokens: Int? = null,
     val decodeTokens: Int? = null,
     val contextUsed: Int? = null,
+    /** Why generation ended early ("loop" / "limit"), or null for a normal end or user stop. */
+    val stopReason: String? = null,
 ) {
     /** Live estimate: one streamed chunk is about one token. */
     val liveTps: Double?
@@ -113,6 +121,10 @@ object LlmEngine {
     val ui: StateFlow<EngineUi> = _ui
 
     val isReady get() = _ui.value.state == EngineState.READY
+
+    /** The raw-session path hand-builds Qwen prompts, so other model families always use the Conversation API. */
+    fun effectiveMode(cfg: SettingsState): ChatMode =
+        if (cfg.variant.family == ModelFamily.QWEN) cfg.chatMode else ChatMode.CONVERSATION
 
     private fun step(id: String, status: StepStatus, detail: String = "", ms: Long? = null) {
         _ui.update { s -> s.copy(steps = s.steps.map { if (it.id == id) it.copy(status = status, detail = detail, ms = ms) else it }) }
@@ -249,7 +261,7 @@ object LlmEngine {
         step("engine", StepStatus.OK, "initialize() returned in $engMs ms\nCPU affinity: ${NpuEnv.cpusAllowed()}\n${NpuEnv.memoryReport(context)}", engMs)
 
         // 9. Conversation
-        if (cfg.chatMode == ChatMode.CONVERSATION) {
+        if (effectiveMode(cfg) == ChatMode.CONVERSATION) {
             val (err, convMs) = timed { runCatching { openConversation(cfg) }.exceptionOrNull() }
             if (err != null) {
                 AppLog.e(TAG, "createConversation threw", err)
@@ -283,7 +295,7 @@ object LlmEngine {
     /** Starts a fresh chat (new KV cache). The engine and NPU contexts stay loaded. */
     suspend fun reset(cfg: SettingsState) = withContext(dispatcher) {
         if (engine == null) return@withContext
-        if (cfg.chatMode == ChatMode.CONVERSATION) {
+        if (effectiveMode(cfg) == ChatMode.CONVERSATION) {
             openConversation(cfg)
         } else {
             conversation?.let { runCatching { it.close() } }
@@ -311,22 +323,46 @@ object LlmEngine {
         val thought = StringBuilder()
         fun stats() = GenStats(chunks, (System.nanoTime() - t0) / 1_000_000, ttft)
 
-        conv.sendMessageAsync(
-            Message.user(text),
-            maxOutputToken = cfg.maxOutputTokens.takeIf { it > 0 },
-            thinkingConfig = ThinkingConfig(enableThinking = cfg.thinking),
-        ).collect { m ->
-            chunks++
-            if (ttft == null) ttft = (System.nanoTime() - t0) / 1_000_000
-            val delta = m.contents.contents.filterIsInstance<Content.Text>().joinToString("") { it.text }
-            answer.append(delta)
-            for ((_, v) in m.channels) thought.append(v)
-            if (chunks <= 3) AppLog.d(CHAT, "chunk#$chunks text=${delta.take(40).quoted()} channels=${m.channels.mapValues { it.value.take(40) }}")
-            else AppLog.v(CHAT, "chunk#$chunks ${delta.quoted()}")
-            emit(GenEvent.Delta(answer.toString(), thought.toString(), stats()))
+        var stopReason: String? = null
+        val rep = cfg.repetitionPenalty.takeIf { it > 1.0f }?.let {
+            RepetitionPenaltyConfig(repetitionPenalty = it, presencePenalty = 0f, frequencyPenalty = 0f, windowSize = 512)
+        }
+        val ngram = cfg.noRepeatNgram.takeIf { it > 0 }?.let { NoRepeatNgramConfig(noRepeatNgramSize = it, windowSize = 2048) }
+        val thinkingConfig = ThinkingConfig(
+            enableThinking = cfg.thinking,
+            thinkingTokenBudget = if (cfg.thinking && cfg.thinkingBudget > 0) cfg.thinkingBudget else -1,
+        )
+        AppLog.d(CHAT, "decode constraints: $rep $ngram $thinkingConfig maxOut=${cfg.maxOutputTokens}")
+        try {
+            conv.sendMessageAsync(
+                Message.user(text),
+                repetitionPenaltyConfig = rep,
+                noRepeatNgramConfig = ngram,
+                maxOutputToken = cfg.maxOutputTokens.takeIf { it > 0 },
+                thinkingConfig = thinkingConfig,
+            ).collect { m ->
+                chunks++
+                if (ttft == null) ttft = (System.nanoTime() - t0) / 1_000_000
+                val delta = m.contents.contents.filterIsInstance<Content.Text>().joinToString("") { it.text }
+                answer.append(delta)
+                for ((_, v) in m.channels) thought.append(v)
+                if (chunks <= 3) AppLog.d(CHAT, "chunk#$chunks text=${delta.take(40).quoted()} channels=${m.channels.mapValues { it.value.take(40) }}")
+                else AppLog.v(CHAT, "chunk#$chunks ${delta.quoted()}")
+                emit(GenEvent.Delta(answer.toString(), thought.toString(), stats()))
+                if (stopReason == null && chunks % 8 == 0 &&
+                    (LoopDetector.isLooping(thought) || LoopDetector.isLooping(answer))
+                ) {
+                    stopReason = "loop"
+                    AppLog.w(CHAT, "repetition loop detected at chunk $chunks; cancelling")
+                    runCatching { conv.cancelProcess() }
+                }
+            }
+        } catch (e: CancellationException) {
+            // Our own loop-stop cancels the native call; a real coroutine cancellation still propagates.
+            if (stopReason == null || !currentCoroutineContext().isActive) throw e
         }
 
-        var final = stats()
+        var final = stats().copy(stopReason = stopReason)
         if (cfg.benchmark) runCatching { conv.getBenchmarkInfo() }
             .onSuccess { b ->
                 AppLog.i(CHAT, "benchmark: $b")
@@ -354,15 +390,27 @@ object LlmEngine {
         var ttft: Long? = null
         var chunks = 0
         val raw = StringBuilder()
-        rawStream(e, prompt).collect { piece ->
-            chunks++
-            if (ttft == null) ttft = (System.nanoTime() - t0) / 1_000_000
-            raw.append(piece)
-            if (chunks <= 3) AppLog.d(CHAT, "raw chunk#$chunks ${piece.take(40).quoted()}") else AppLog.v(CHAT, "raw chunk#$chunks ${piece.quoted()}")
-            val parts = ThinkSplit.split(raw.toString(), startsInside = cfg.thinking)
-            emit(GenEvent.Delta(parts.answer, parts.thought, GenStats(chunks, (System.nanoTime() - t0) / 1_000_000, ttft)))
+        var stopReason: String? = null
+        try {
+            rawStream(e, prompt).collect { piece ->
+                chunks++
+                if (ttft == null) ttft = (System.nanoTime() - t0) / 1_000_000
+                raw.append(piece)
+                if (chunks <= 3) AppLog.d(CHAT, "raw chunk#$chunks ${piece.take(40).quoted()}") else AppLog.v(CHAT, "raw chunk#$chunks ${piece.quoted()}")
+                val parts = ThinkSplit.split(raw.toString(), startsInside = cfg.thinking)
+                emit(GenEvent.Delta(parts.answer, parts.thought, GenStats(chunks, (System.nanoTime() - t0) / 1_000_000, ttft)))
+                // Sessions take no decode constraints, so cap length and catch loops here.
+                val limitHit = cfg.maxOutputTokens in 1..chunks
+                if (stopReason == null && (limitHit || (chunks % 8 == 0 && LoopDetector.isLooping(raw)))) {
+                    stopReason = if (limitHit) "limit" else "loop"
+                    AppLog.w(CHAT, "raw: stopping ($stopReason) at chunk $chunks")
+                    activeSession?.let { s -> runCatching { s.cancelProcess() } }
+                }
+            }
+        } catch (ce: CancellationException) {
+            if (stopReason == null || !currentCoroutineContext().isActive) throw ce
         }
-        val final = GenStats(chunks, (System.nanoTime() - t0) / 1_000_000, ttft)
+        val final = GenStats(chunks, (System.nanoTime() - t0) / 1_000_000, ttft, stopReason = stopReason)
         AppLog.i(CHAT, "raw done: chunks=$chunks elapsed=${final.elapsedMs}ms ttft=${final.ttftMs}ms live=${final.liveTps?.let { "%.1f".format(it) }} tok/s")
         emit(GenEvent.Done(final))
     }.flowOn(dispatcher)

@@ -9,15 +9,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -31,65 +29,60 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.npuchat.BuildConfig
 import com.npuchat.ChatMode
-import com.npuchat.engine.EngineState
 import com.npuchat.engine.NpuEnv
 import com.npuchat.log.Level
-import com.npuchat.model.ModelStore
-import com.npuchat.model.ModelVariant
+import com.npuchat.model.ModelFamily
+import kotlin.math.roundToInt
 
 @Composable
 fun SettingsScreen(vm: AppViewModel) {
     val s by vm.settings.collectAsStateWithLifecycle()
-    val engine by vm.engine.collectAsStateWithLifecycle()
-    val modelReady by vm.modelReady.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
-    var confirmDelete by remember { mutableStateOf(false) }
-    val engineLoaded = engine.state == EngineState.READY || engine.state == EngineState.INITIALIZING
+    val isQwen = s.variant.family == ModelFamily.QWEN
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Section("Model")
-        ModelVariant.entries.forEach { v ->
-            val ready = ModelStore.isReady(ctx, v)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                RadioButton(selected = s.variant == v, onClick = { vm.updateSettings { it.copy(variant = v) } }, enabled = !engineLoaded)
-                Column(Modifier.weight(1f)) {
-                    Text(v.label)
-                    Text(
-                        if (!ready) "not downloaded" else if (ModelStore.isVerified(ctx, v)) "downloaded, SHA-256 verified" else "downloaded, not verified",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
-        }
-        if (engineLoaded) Hint("One NPU model per process: restart the app to switch models.")
-        if (modelReady && !engineLoaded) {
-            OutlinedButton(onClick = { confirmDelete = true }) { Text("Delete ${s.variant.fileName}") }
-        }
+        Section("Models")
+        ModelList(vm)
 
         Section("Chat")
         Toggle("Thinking (reasoning before answering)", s.thinking) { on -> vm.updateSettings { it.copy(thinking = on) } }
         ChatMode.entries.forEach { m ->
+            val enabled = isQwen || m == ChatMode.CONVERSATION
             Row(verticalAlignment = Alignment.CenterVertically) {
-                RadioButton(selected = s.chatMode == m, onClick = { vm.updateSettings { it.copy(chatMode = m) } })
-                Text(m.label)
+                RadioButton(selected = s.chatMode == m, onClick = { vm.updateSettings { it.copy(chatMode = m) } }, enabled = enabled)
+                Text(m.label, color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        Hint("Changing the mode starts a new chat. The NPU is greedy: temperature/top-k have no effect, so there are no sampling settings.")
+        Hint(
+            if (isQwen) "Changing the mode starts a new chat."
+            else "Raw session mode builds Qwen prompts by hand, so ${s.variant.label} always uses the Conversation API.",
+        )
         var sys by remember(s.systemPrompt) { mutableStateOf(s.systemPrompt) }
         OutlinedTextField(
             sys, { sys = it; vm.updateSettings { st -> st.copy(systemPrompt = it) } },
             Modifier.fillMaxWidth(), label = { Text("System prompt (applies to new chats)") }, maxLines = 4,
         )
-        var maxOut by remember(s.maxOutputTokens) { mutableStateOf(if (s.maxOutputTokens > 0) s.maxOutputTokens.toString() else "") }
-        OutlinedTextField(
-            maxOut,
-            { v -> maxOut = v.filter(Char::isDigit); vm.updateSettings { it.copy(maxOutputTokens = maxOut.toIntOrNull() ?: 0) } },
-            Modifier.fillMaxWidth(), label = { Text("Max output tokens (empty = model default)") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true,
+        NumberField("Max output tokens per reply (0 = no limit)", s.maxOutputTokens) { v -> vm.updateSettings { it.copy(maxOutputTokens = v) } }
+
+        Section("Stop repetition loops")
+        Hint(
+            "The NPU always picks the most likely next token (greedy), so temperature/top-k do nothing and small " +
+                "models can repeat themselves forever, especially while thinking. These are applied to the model's " +
+                "scores before each pick, on the NPU path too.",
         )
+        NumberField("Thinking budget in tokens (0 = unlimited)", s.thinkingBudget) { v -> vm.updateSettings { it.copy(thinkingBudget = v) } }
+        Text("Repetition penalty: %.2f%s".format(s.repetitionPenalty, if (s.repetitionPenalty <= 1.0f) " (off)" else ""))
+        Slider(
+            value = s.repetitionPenalty,
+            onValueChange = { v -> vm.updateSettings { it.copy(repetitionPenalty = (v * 20).roundToInt() / 20f) } },
+            valueRange = 1.0f..1.5f,
+            steps = 9,
+        )
+        NumberField("Block repeated phrases of N tokens (0 = off)", s.noRepeatNgram) { v -> vm.updateSettings { it.copy(noRepeatNgram = v) } }
+        Hint("If a reply still loops, the app stops it and starts a fresh context.")
 
         Section("Engine")
         Toggle("Initialise NPU on launch", s.autoInit) { on -> vm.updateSettings { it.copy(autoInit = on) } }
@@ -112,16 +105,17 @@ fun SettingsScreen(vm: AppViewModel) {
         Section("About")
         Mono("NPU Chat ${BuildConfig.VERSION_NAME} (${BuildConfig.GIT_SHA})\n\n${NpuEnv.nativeManifest(ctx)}")
     }
+}
 
-    if (confirmDelete) {
-        AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            title = { Text("Delete model?") },
-            text = { Text("${s.variant.fileName} (${formatGb(s.variant.sizeBytes)}) will be removed and has to be downloaded again.") },
-            confirmButton = { TextButton(onClick = { confirmDelete = false; vm.deleteModel() }) { Text("Delete") } },
-            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
-        )
-    }
+@Composable
+private fun NumberField(label: String, value: Int, onChange: (Int) -> Unit) {
+    var text by remember(value) { mutableStateOf(value.toString()) }
+    OutlinedTextField(
+        text,
+        { v -> text = v.filter(Char::isDigit).take(6); onChange(text.toIntOrNull() ?: 0) },
+        Modifier.fillMaxWidth(), label = { Text(label) },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true,
+    )
 }
 
 @Composable

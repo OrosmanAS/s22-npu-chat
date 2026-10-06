@@ -36,3 +36,23 @@ object ThinkSplit {
         }
     }
 }
+
+/**
+ * Last-resort guard against greedy-decoding loops: true when the tail of [text] is the same block
+ * repeated [repeats] times in a row (blocks of 20..600 chars).
+ */
+object LoopDetector {
+    fun isLooping(text: CharSequence, repeats: Int = 3): Boolean {
+        val n = text.length
+        for (period in 20..600) {
+            if (period * repeats > n) break
+            val start = n - period * repeats
+            var same = true
+            for (i in 0 until period * (repeats - 1)) {
+                if (text[start + i] != text[start + i + period]) { same = false; break }
+            }
+            if (same) return true
+        }
+        return false
+    }
+}
