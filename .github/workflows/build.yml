@@ -22,7 +22,7 @@ env:
   QAIRT_VERSION: 2.50.0.260828
   NDK_VERSION: r28b
   # Bump to invalidate the native-libs cache when the recipe below changes.
-  NATIVE_RECIPE: "1"
+  NATIVE_RECIPE: "2"
 
 jobs:
   # Fast feedback on the Kotlin/Gradle side without waiting for the native build.
@@ -36,7 +36,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v5
       - run: ./gradlew --no-daemon :app:assembleDebug
 
   native-libs:
@@ -148,7 +148,7 @@ jobs:
             sha256sum *.so | while read -r sum name; do echo "$name $(stat -c %s "$name") ${sum:0:16}"; done
             echo
             echo "dispatch NEEDED: $($READELF -d libLiteRtDispatch_Qualcomm.so | grep NEEDED | sed 's/.*\[\(.*\)\]/\1/' | tr '\n' ' ')"
-            echo "dispatch exports LiteRtDispatchGetApi: $($READELF --dyn-syms libLiteRtDispatch_Qualcomm.so | grep -c ' LiteRtDispatchGetApi$')"
+            echo "dispatch exports LiteRtDispatchGetApi: $($READELF --dyn-syms libLiteRtDispatch_Qualcomm.so | grep -cw 'LiteRtDispatchGetApi')"
           } > native_libs.txt
           cat native_libs.txt
           # The dispatch lib must not depend on libLiteRt.so: the AAR links LiteRT statically into
@@ -195,7 +195,7 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v5
 
       - name: Build
         run: ./gradlew --no-daemon :app:assembleDebug -PrequireNativeLibs=true

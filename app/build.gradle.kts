@@ -83,7 +83,7 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.12.0")
 }
 
-val checkNativeLibs by tasks.registering {
+val checkNativeLibs = tasks.register("checkNativeLibs") {
     val dir = layout.projectDirectory.dir("src/main/jniLibs/arm64-v8a")
     val enforce = providers.gradleProperty("requireNativeLibs").map { it.toBoolean() }.orElse(false)
     doLast {
