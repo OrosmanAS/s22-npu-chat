@@ -1,0 +1,24 @@
+# Gradle / Android
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+
+# Native libs are fetched/built in CI, never committed
+app/src/main/jniLibs/**/*.so
+
+# Model files
+*.litertlm
+
+# Bazel
+bazel-*
+
+# OS
+.DS_Store
+Thumbs.db
