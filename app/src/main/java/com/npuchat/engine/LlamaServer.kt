@@ -92,6 +92,8 @@ object LlamaServer {
 
     fun exitCode(): Int? = process?.takeIf { !it.isAlive }?.exitValue()
 
+    private var lastHealthError: String? = null
+
     /** GET /health: 200 = ready, 503 = still loading, null = not reachable. */
     fun health(): Int? = try {
         val c = (URL("http://127.0.0.1:$PORT/health").openConnection() as HttpURLConnection).apply {
@@ -99,7 +101,14 @@ object LlamaServer {
             readTimeout = 2000
         }
         try { c.responseCode } finally { c.disconnect() }
-    } catch (_: IOException) {
+    } catch (e: IOException) {
+        // Log each distinct failure once: "connection refused" while starting is normal, anything
+        // else (e.g. cleartext blocked by network security config) is a bug worth seeing.
+        val msg = "${e.javaClass.simpleName}: ${e.message}"
+        if (msg != lastHealthError) {
+            lastHealthError = msg
+            AppLog.d(TAG, "health check failed: $msg")
+        }
         null
     }
 

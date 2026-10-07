@@ -364,8 +364,11 @@ object LlmEngine {
             if (!LlamaServer.isRunning || System.nanoTime() > deadline) {
                 settings.initInProgress = false
                 val last = synchronized(tail) { tail.joinToString("\n") }
+                val wasRunning = LlamaServer.isRunning
+                val exit = LlamaServer.exitCode()
+                LlamaServer.stop() // don't leave a half-loaded server holding RAM
                 return failInit("load",
-                    (if (LlamaServer.isRunning) "Timed out waiting for the model to load" else "llama-server exited (code ${LlamaServer.exitCode()})") +
+                    (if (wasRunning) "Timed out waiting for the model to load" else "llama-server exited (code $exit)") +
                         "\n\nLast output:\n$last",
                     (System.nanoTime() - t0) / 1_000_000)
             }
