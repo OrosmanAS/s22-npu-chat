@@ -1,0 +1,52 @@
+name: llama.cpp for Android
+
+# CPU build of llama.cpp (llama-server, llama-cli) for arm64 Android, used to run large MoE GGUF
+# models (e.g. Kimi-Linear-48B-A3B) from adb shell / Termux with the weights mmap'd from storage.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "llama.cpp git ref (branch, tag or commit)"
+        default: master
+  push:
+    paths:
+      - .github/workflows/llama-cpp-android.yml
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out llama.cpp
+        run: |
+          git clone --depth 1 --branch "${{ inputs.ref || 'master' }}" https://github.com/ggml-org/llama.cpp.git llama.cpp 2>/dev/null \
+            || { git clone https://github.com/ggml-org/llama.cpp.git llama.cpp && git -C llama.cpp checkout "${{ inputs.ref }}"; }
+          git -C llama.cpp log -1 --format='%H %cs %s'
+
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r28b
+          add-to-path: false
+
+      - name: Build
+        run: |
+          cmake -S llama.cpp -B build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=${{ steps.ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-31 -DANDROID_STL=c++_static \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+            -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+i8mm+fp16 \
+            -DGGML_OPENMP=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF \
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build build --target llama-server llama-cli --parallel 4
+          mkdir out
+          cp build/bin/llama-server build/bin/llama-cli out/
+          ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip out/*
+          git -C llama.cpp log -1 --format='llama.cpp %H %cs' > out/VERSION.txt
+          ls -l out; cat out/VERSION.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llama-cpp-android-arm64
+          path: out
