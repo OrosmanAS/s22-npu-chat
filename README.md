@@ -5,7 +5,7 @@ An Android app that runs a local LLM on the **Hexagon NPU of the Snapdragon 8 Ge
 > [!WARNING]
 > **Disclaimer: please read.**
 >
-> - **Made with a lot of help from AI.** Most of the code, the build pipeline and this README were written together with an AI coding assistant (Claude). I tested it on one phone and steered it and fixed it dumb code. It was not written or reviewed by an Android or ML expert.
+> - **Made with a lot of help from AI.** Most of the code, the build pipeline and this README were written together with an AI coding assistant (Claude). I tested it on one phone and steered it and fixed its dumb code. It was not written or reviewed by an Android or ML expert.
 > - **It is not good software.** It is not polished, optimised, secure, or "the best it can be" in any way. Expect bugs, rough edges and hacks.
 > - **Don't trust it.** Don't rely on it for anything important, don't trust what the models say, and don't use it with sensitive data. Some models in it can freeze the phone until it restarts itself (they're marked experimental and ask first).
 > - **Why it exists:** to show that an LLM *can* run on the Snapdragon 8 Gen 1 NPU, which most official tooling no longer supports. That's it.
