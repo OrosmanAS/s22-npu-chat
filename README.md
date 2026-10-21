@@ -76,26 +76,11 @@ What the build does, in [`.github/workflows/build.yml`](.github/workflows/build.
 - **A free GitHub account.** Private repositories and Actions are included. The first build takes roughly 15–25 minutes of Actions time, later builds about 5. A free account includes 2,000 minutes a month for private repos.
 - **About 3 GB of free storage** on the phone for the default model, and Wi-Fi for the download.
 
-Pick **one** of the two ways below to make your private copy.
+### Build it
 
-### Option A: only a web browser
+You need [Git](https://git-scm.com/downloads) and the [GitHub CLI](https://cli.github.com/) (`gh`). The commands work in a Linux/macOS terminal and in Windows PowerShell; where they differ, both versions are given. Replace `YOUR-NAME` with your GitHub username.
 
-1. Sign in to GitHub and open **https://github.com/new/import**.
-2. Fill in the form:
-   - **Your old repository's clone URL:** `https://github.com/OrosmanAS/s22-npu-chat.git`
-   - **Repository name:** anything, for example `my-npu-chat`
-   - **Privacy:** select **Private**. This is required: the full build only runs in private repos.
-3. Click **Begin import** and wait for "Your new repository is ready" (about a minute).
-4. Open your new repository, go to the **Actions** tab, and if GitHub asks, click **"I understand my workflows, go ahead and enable them"**.
-5. In the left sidebar click **Build APK**, then **Run workflow** (on the right). Keep **Branch: main** and click the green **Run workflow** button.
-6. Wait until the run shows a green tick. Click it to watch the progress of each job.
-7. Go to your repository's **Releases** (right sidebar, or `https://github.com/YOUR-NAME/my-npu-chat/releases`). **Latest build** has the APK, `npu-chat-<number>.apk`.
-
-Continue with [Install it on the phone](#install-it-on-the-phone).
-
-### Option B: command line
-
-You need [Git](https://git-scm.com/downloads) and the [GitHub CLI](https://cli.github.com/) (`gh`). Replace `YOUR-NAME` with your GitHub username.
+#### 1. Create your private copy
 
 1. Sign in to GitHub from the terminal:
 
@@ -103,88 +88,109 @@ You need [Git](https://git-scm.com/downloads) and the [GitHub CLI](https://cli.g
    gh auth login
    ```
 
-2. Create an empty **private** repository:
+2. Create an empty **private** repository. It must be private: the full build doesn't run in public repos.
 
    ```bash
    gh repo create my-npu-chat --private
    ```
 
-3. Copy this repository into it. Pushing to `main` starts the build automatically:
+#### 2. Optional: a signing key, so updates keep your models
 
-   ```bash
-   git clone --bare https://github.com/OrosmanAS/s22-npu-chat.git
-   cd s22-npu-chat.git
-   git push --mirror https://github.com/YOUR-NAME/my-npu-chat.git
-   cd ..
-   ```
+Without a key, every build is signed with GitHub's throwaway debug key. Installing a newer build then fails with *"App not installed"*. You'd have to uninstall first, which **deletes the downloaded models** (2–23 GB). With your own key, every build installs as an update. Do this now, before the first build. You can skip it and come back later, but then you'll need one uninstall.
 
-   Then delete the temporary `s22-npu-chat.git` folder. Use `rm -rf s22-npu-chat.git` on Linux/macOS, or `Remove-Item -Recurse -Force s22-npu-chat.git` in PowerShell.
-4. Watch the build until it finishes:
-
-   ```bash
-   gh run watch --repo YOUR-NAME/my-npu-chat
-   ```
-
-   If it says no run is in progress, start one by hand:
-
-   ```bash
-   gh workflow run build.yml --repo YOUR-NAME/my-npu-chat
-   ```
-
-   Then run `gh run watch` again.
-5. Download the APK:
-
-   ```bash
-   gh release download latest --repo YOUR-NAME/my-npu-chat --pattern "*.apk"
-   ```
-
-### Optional: a signing key, so updates keep your models
-
-Without a key, every build is signed with GitHub's throwaway debug key. Installing a newer build then fails with *"App not installed"*. You'd have to uninstall first, which **deletes the downloaded models** (2–23 GB). With your own key, every build installs as an update.
-
-It's best to do this **before** the first build, or rebuild once after setting it:
-
-1. Create a key. You need a Java JDK for `keytool`; [Temurin](https://adoptium.net/) works. Choose a password when asked and keep it safe:
+1. Create a key. You need a Java JDK for `keytool`; [Temurin](https://adoptium.net/) works. Choose a password when asked and keep it safe. The alias must be `npuchat`, because the build expects it.
 
    ```bash
    keytool -genkeypair -keystore npuchat.p12 -storetype PKCS12 -alias npuchat -keyalg RSA -keysize 3072 -validity 10950 -dname "CN=NPU Chat"
    ```
 
-   The alias must be `npuchat`, because the build expects it.
-2. Convert it to base64:
+2. Store the key as a repository secret.
    - Linux:
 
      ```bash
-     base64 -w0 npuchat.p12 > npuchat.p12.b64
+     base64 -w0 npuchat.p12 | gh secret set NPUCHAT_KEYSTORE_B64 --repo YOUR-NAME/my-npu-chat
      ```
 
    - macOS:
 
      ```bash
-     base64 -i npuchat.p12 -o npuchat.p12.b64
+     base64 -i npuchat.p12 | gh secret set NPUCHAT_KEYSTORE_B64 --repo YOUR-NAME/my-npu-chat
      ```
 
    - Windows PowerShell:
 
      ```powershell
-     [Convert]::ToBase64String([IO.File]::ReadAllBytes("npuchat.p12")) | Set-Content -NoNewline npuchat.p12.b64
+     gh secret set NPUCHAT_KEYSTORE_B64 --repo YOUR-NAME/my-npu-chat --body ([Convert]::ToBase64String([IO.File]::ReadAllBytes("$PWD\npuchat.p12")))
      ```
 
-3. Store both values as repository secrets.
-   - **On the web:** go to your repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**. Add `NPUCHAT_KEYSTORE_B64` with the contents of `npuchat.p12.b64`, and `NPUCHAT_KEYSTORE_PASSWORD` with your password.
-   - **With the CLI:**
+3. Store the password as a second secret. The command asks for it:
+
+   ```bash
+   gh secret set NPUCHAT_KEYSTORE_PASSWORD --repo YOUR-NAME/my-npu-chat
+   ```
+
+4. Check that both secrets are there:
+
+   ```bash
+   gh secret list --repo YOUR-NAME/my-npu-chat
+   ```
+
+5. Keep `npuchat.p12` and its password somewhere safe; you need the same key for every future build. **Never commit them;** `*.p12` is already in `.gitignore`.
+
+#### 3. Copy the code in and build
+
+1. Make a temporary copy of this repository:
+
+   ```bash
+   git clone --bare https://github.com/OrosmanAS/s22-npu-chat.git
+   ```
+
+2. Go into it:
+
+   ```bash
+   cd s22-npu-chat.git
+   ```
+
+3. Push it to your private repository. Pushing to `main` starts the build automatically:
+
+   ```bash
+   git push --mirror https://github.com/YOUR-NAME/my-npu-chat.git
+   ```
+
+4. Leave the temporary copy and delete it.
+   - Linux/macOS:
 
      ```bash
-     gh secret set NPUCHAT_KEYSTORE_B64 --repo YOUR-NAME/my-npu-chat < npuchat.p12.b64
+     cd .. && rm -rf s22-npu-chat.git
      ```
 
-     ```bash
-     gh secret set NPUCHAT_KEYSTORE_PASSWORD --repo YOUR-NAME/my-npu-chat
+   - Windows PowerShell:
+
+     ```powershell
+     cd ..; Remove-Item -Recurse -Force s22-npu-chat.git
      ```
 
-     The second command asks for the password.
-4. Run the build again (Actions → Build APK → Run workflow, or `gh workflow run build.yml --repo YOUR-NAME/my-npu-chat`).
-5. Keep `npuchat.p12` and its password somewhere safe. **Never commit them;** `*.p12` is already in `.gitignore`.
+5. Watch the build. The first one takes roughly 15–25 minutes, later ones about 5:
+
+   ```bash
+   gh run watch --repo YOUR-NAME/my-npu-chat
+   ```
+
+   If it says nothing is running, start a build by hand, then run the `gh run watch` command again:
+
+   ```bash
+   gh workflow run build.yml --repo YOUR-NAME/my-npu-chat
+   ```
+
+6. When it's done, download the APK into the current folder:
+
+   ```bash
+   gh release download latest --repo YOUR-NAME/my-npu-chat --pattern "*.apk"
+   ```
+
+   The build also publishes it as **Latest build** under your repository's **Releases**, which is handy for downloading straight on the phone.
+
+To rebuild later, for example after adding the signing key, run `gh workflow run build.yml --repo YOUR-NAME/my-npu-chat`.
 
 ### Install it on the phone
 
@@ -255,9 +261,9 @@ The push starts a new build; install the new APK the same way as before. Only st
 
 | Problem | Fix |
 |---|---|
-| Only "Compile check" runs, there's no APK | The repo is public. The full build only runs in a **private** repository. |
-| No workflow runs at all | Actions → enable workflows, then Build APK → Run workflow. |
-| *"App not installed"* when updating | The new APK is signed with a different key. Set up a [signing key](#optional-a-signing-key-so-updates-keep-your-models), then uninstall once. This deletes the models. |
+| Only "Compile check" runs, there's no APK | The repo is public; check with `gh repo view YOUR-NAME/my-npu-chat --json visibility`. The full build only runs in a **private** repository. |
+| No workflow runs at all | Start one with `gh workflow run build.yml --repo YOUR-NAME/my-npu-chat`, then check with `gh run list --repo YOUR-NAME/my-npu-chat`. |
+| *"App not installed"* when updating | The new APK is signed with a different key. Set up a [signing key](#2-optional-a-signing-key-so-updates-keep-your-models), then uninstall once. This deletes the models. |
 | NPU step fails with **1002** | The phone isn't SM8450, or another app is using the NPU's memory. Close heavy apps and use **Restart app**. |
 | A reply loops forever | Lower the thinking budget or turn Thinking off, under Settings → Stop repetition loops. |
 | The phone freezes with Kimi-Linear | Expected risk: it's much bigger than the RAM. The phone restarts itself and the app won't auto-load it again. |
