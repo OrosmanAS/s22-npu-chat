@@ -30,21 +30,25 @@ android {
         ndk { abiFilters += "arm64-v8a" }
     }
 
-    signingConfigs {
-        // Fixed debug key, committed on purpose: every CI build must be signed with the same key
-        // so a new APK installs as an update. Uninstalling would delete the 2 GB model.
-        getByName("debug") {
-            storeFile = file("debug.p12")
-            storeType = "pkcs12"
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+    // Every build must be signed with the same key so a new APK installs as an update (an
+    // uninstall would delete the multi-GB models). CI gets that key from repository secrets
+    // (NPUCHAT_KEYSTORE / NPUCHAT_KEYSTORE_PASSWORD); without them, e.g. in a fork or a local
+    // build, the standard Android debug key is used.
+    val ciKeystore = System.getenv("NPUCHAT_KEYSTORE")?.let { file(it) }?.takeIf { it.exists() }
+    if (ciKeystore != null) {
+        signingConfigs {
+            create("npuchat") {
+                storeFile = ciKeystore
+                storeType = "pkcs12"
+                storePassword = System.getenv("NPUCHAT_KEYSTORE_PASSWORD")
+                keyAlias = "npuchat"
+                keyPassword = System.getenv("NPUCHAT_KEYSTORE_PASSWORD")
+            }
         }
-    }
-
-    buildTypes {
-        getByName("debug") {
-            signingConfig = signingConfigs.getByName("debug")
+        buildTypes {
+            getByName("debug") {
+                signingConfig = signingConfigs.getByName("npuchat")
+            }
         }
     }
 

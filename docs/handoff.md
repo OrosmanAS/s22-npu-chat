@@ -1,6 +1,6 @@
 # Handoff: NPU chat app for Galaxy S22+ (Snapdragon 8 Gen 1)
 
-Paste this whole file as the first message of a Claude Code cloud session attached to the private repo.
+> The original brief this project started from (October 2026), kept for context. Some details changed during the build; the [README](../README.md) describes what exists now.
 
 ## Goal
 A proper Android app (Kotlin) that runs a local LLM on the Hexagon NPU of my Galaxy S22+, fully on the phone, no PC needed. Built entirely in GitHub Actions; I install the APK on the phone. I have no WSL and a 16 GB Windows PC, so nothing should need building locally.
@@ -45,7 +45,7 @@ Reference: "Six silent failures" write-up (LiteRT-LM NPU in an Android app on S2
 1. Download QAIRT 2.50 (check whether LiteRT's Bazel workspace fetches QAIRT from a public URL; reuse that) and extract the four v69 libs.
 2. Build `libLiteRtDispatch_Qualcomm.so` with Bazel from LiteRT `9fe5be4` (or the commit matching the chosen AAR). Cache Bazel outputs. Watch runner RAM (private-repo runners are small): limit jobs.
 3. Copy libs into `app/src/main/jniLibs/arm64-v8a/`, build a debug APK with Gradle, upload as a workflow artifact.
-- Repo must stay **private** (Qualcomm libs aren't for public redistribution).
+- Qualcomm libs aren't for public redistribution: builds that bundle them (APK, artifacts, releases) must only exist in a private repo.
 
 ## App features (v1)
 - First launch: download the model from Hugging Face with progress, verify SHA-256, store in app files dir. Allow import from local storage as an alternative.

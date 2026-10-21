@@ -26,3 +26,8 @@ Thumbs.db
 # CI-generated build provenance / native lib staging
 app/src/main/assets/native_libs.txt
 native-out/
+
+# Signing keys live in CI secrets, never in the repo
+*.p12
+*.jks
+*.keystore

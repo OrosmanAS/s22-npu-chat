@@ -1,5 +1,9 @@
 name: Build APK
 
+# Public repos (and forks) only run the compile check: the full APK bundles Qualcomm's QNN
+# runtime libraries, which must not be redistributed publicly. In a private repo the full
+# pipeline runs: QAIRT libs + LiteRT dispatch lib, llama-server, signed APK, "latest" release.
+
 on:
   push:
     branches: ["**"]
@@ -44,6 +48,7 @@ jobs:
 
   native-libs:
     name: QNN runtime + dispatch lib
+    if: github.event.repository.private
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
@@ -173,6 +178,7 @@ jobs:
 
   llama-server:
     name: llama.cpp server (CPU models)
+    if: github.event.repository.private
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -195,7 +201,13 @@ jobs:
         run: |
           git clone --filter=blob:none https://github.com/ggml-org/llama.cpp.git llama.cpp
           git -C llama.cpp checkout "$LLAMA_CPP_COMMIT"
-          cmake -S llama.cpp -B build -G Ninja             -DCMAKE_TOOLCHAIN_FILE=${{ steps.ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake             -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-31 -DANDROID_STL=c++_static             -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF             -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+i8mm+fp16             -DGGML_OPENMP=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF             -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake -S llama.cpp -B build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=${{ steps.ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-31 -DANDROID_STL=c++_static \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+            -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+i8mm+fp16 \
+            -DGGML_OPENMP=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF \
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
           cmake --build build --target llama-server --parallel 4
           mkdir llama-out
           cp build/bin/llama-server llama-out/libllama_server.so
@@ -219,6 +231,7 @@ jobs:
   apk:
     name: Debug APK
     needs: [native-libs, llama-server]
+    if: github.event.repository.private
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -250,7 +263,20 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v5
 
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.NPUCHAT_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/npuchat.p12"
+            echo "NPUCHAT_KEYSTORE=$RUNNER_TEMP/npuchat.p12" >> "$GITHUB_ENV"
+          else
+            echo "::warning::NPUCHAT_KEYSTORE_B64 not set: signing with the default debug key, so this APK won't install over one signed with the project key."
+          fi
+
       - name: Build
+        env:
+          NPUCHAT_KEYSTORE_PASSWORD: ${{ secrets.NPUCHAT_KEYSTORE_PASSWORD }}
         run: ./gradlew --no-daemon :app:assembleDebug -PrequireNativeLibs=true
 
       - name: Check APK contents
